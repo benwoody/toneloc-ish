@@ -1,0 +1,23 @@
+[package]
+name = "tl-audio"
+description = "Procedural telephony and modem-handshake synthesis for toneloc-ish. Every sound is generated from its real frequencies; no audio files."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["playback"]
+# Actually make noise. Without it the crate is pure synthesis + WAV output,
+# which is what CI runs (build machines have no sound card).
+playback = ["dep:rodio"]
+
+[dependencies]
+tl-core.workspace = true
+# Only the playback path; none of rodio's decoders. We generate every
+# sample ourselves, so mp3/vorbis/flac support would be dead weight.
+rodio = { version = "0.21", default-features = false, features = ["playback"], optional = true }
