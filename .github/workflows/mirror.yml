@@ -1,13 +1,21 @@
 name: Mirror to Codeberg
 
 # Runs after CI rather than alongside it, so a red build is never mirrored.
-# `delete` is not a workflow_run event, so branch and tag deletions are caught
+#
+# Tags need their own trigger. CI only runs on pushes to main, so pushing a tag
+# produces no workflow_run and the tag would sit on GitHub forever without ever
+# reaching Codeberg. A tag points at a commit that has already been through CI,
+# so there is nothing to wait for.
+#
+# `delete` is likewise not a workflow_run event, so deletions are caught
 # directly; the push itself is --prune, which is what propagates them.
 on:
   workflow_run:
     workflows: [CI]
     types: [completed]
     branches: [main]
+  push:
+    tags: ['v*']
   delete:
 
 concurrency: mirror
@@ -15,9 +23,10 @@ concurrency: mirror
 jobs:
   mirror:
     runs-on: ubuntu-latest
-    # A deletion has no build to wait on. Anything else has to have passed.
+    # Deletions and tags have no build of their own to wait on. Anything
+    # arriving via workflow_run has to have passed.
     if: >-
-      github.event_name == 'delete' ||
+      github.event_name != 'workflow_run' ||
       github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Clone source
