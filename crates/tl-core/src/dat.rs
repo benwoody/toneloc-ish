@@ -355,7 +355,7 @@ mod tests {
         bytes[0] = b'X';
         assert_eq!(
             DatFile::parse(&bytes),
-            Err(DatError::BadProductCode([b'X', b'L']))
+            Err(DatError::BadProductCode(*b"XL"))
         );
     }
 
