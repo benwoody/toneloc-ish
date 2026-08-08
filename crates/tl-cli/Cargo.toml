@@ -1,0 +1,30 @@
+[package]
+name = "toneloc-ish"
+description = "A historical simulator of the ToneLoc wardialer — relive the 1980s/90s wardialing era, no phone line required."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+
+[[bin]]
+name = "toneloc-ish"
+path = "src/main.rs"
+
+[features]
+default = ["audio"]
+audio = ["dep:tl-audio"]
+
+[dependencies]
+tl-core.workspace = true
+tl-modem.workspace = true
+crossterm.workspace = true
+tl-tui.workspace = true
+tl-audio = { workspace = true, optional = true }
+clap.workspace = true
+anyhow.workspace = true
