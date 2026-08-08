@@ -516,11 +516,9 @@ fn screen(path: &Path, progress: u8) -> Result<()> {
     let total_minutes = dat.header.minutes.max(1) as u32;
     let elapsed_minutes = total_minutes * progress as u32 / 100;
     let dialed_so_far = tl_core::CELL_COUNT as u32 * progress as u32 / 100;
-    let rate = if elapsed_minutes > 0 {
-        dialed_so_far * 60 / elapsed_minutes
-    } else {
-        0
-    };
+    let rate = (dialed_so_far * 60)
+        .checked_div(elapsed_minutes)
+        .unwrap_or(0);
     // Scans ran overnight; 22:00 is as good a start as any.
     const START_HOUR: u32 = 22;
     let clock = |minutes: u32, seconds: u32| {
@@ -584,7 +582,7 @@ fn screen(path: &Path, progress: u8) -> Result<()> {
     let tail = recent.len().saturating_sub(21);
     // Back-date the visible lines from "now" at the scan's own pace, so the
     // log agrees with the Started/Current clock beside it.
-    let seconds_per_dial = if rate > 0 { 3600 / rate } else { 14 };
+    let seconds_per_dial = 3600u32.checked_div(rate).unwrap_or(14);
     for (i, (number, cell)) in recent[tail..].iter().enumerate() {
         let back = (recent.len() - tail - i) as u32 * seconds_per_dial;
         let stamp = clock(
