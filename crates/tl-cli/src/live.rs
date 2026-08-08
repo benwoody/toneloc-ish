@@ -483,3 +483,161 @@ impl Replay {
         (self.state.tried, self.state.found_count)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tl_core::Cell;
+
+    /// A scan of exactly the numbers given, and nothing else dialed.
+    ///
+    /// `minutes` is the header field the replay divides to get its pace, so
+    /// these are chosen to come out round rather than to be plausible.
+    fn scan(minutes: u16, cells: &[(u16, Cell)]) -> DatFile {
+        let mut dat = DatFile::new();
+        dat.header.minutes = minutes;
+        for (number, cell) in cells {
+            dat.set(*number, *cell);
+        }
+        dat
+    }
+
+    fn replay_of(minutes: u16, cells: &[(u16, Cell)]) -> Replay {
+        Replay::new(scan(minutes, cells), "555XXXX.DAT", DialOrder::Forward)
+    }
+
+    fn carrier() -> Cell {
+        CellClass::Carrier.with_rings(1)
+    }
+    fn busy() -> Cell {
+        CellClass::Busy.with_rings(0)
+    }
+    fn voice() -> Cell {
+        CellClass::Voice.with_rings(2)
+    }
+
+    #[test]
+    fn only_the_numbers_the_original_dialed_are_replayed() {
+        let mut replay = replay_of(1, &[(10, busy()), (25, carrier()), (99, voice())]);
+
+        let mut dialed = Vec::new();
+        while let Some((number, _)) = replay.dial_one() {
+            dialed.push(number);
+        }
+
+        // The other 9,997 cells were never called. Dialing them would be
+        // inventing calls that no one made.
+        assert_eq!(dialed, vec![10, 25, 99]);
+    }
+
+    #[test]
+    fn a_carrier_is_a_find_and_says_so_in_the_log() {
+        let mut replay = replay_of(1, &[(25, carrier())]);
+
+        let (_, cell) = replay.dial_one().expect("one number to dial");
+        assert_eq!(cell.class(), CellClass::Carrier);
+
+        assert_eq!(replay.summary(), (1, 1), "dialed one, found one");
+        assert_eq!(replay.state.found, vec!["5550025"]);
+        assert!(
+            replay
+                .state
+                .activity
+                .last()
+                .unwrap()
+                .contains("* CARRIER *"),
+            "log said: {:?}",
+            replay.state.activity.last()
+        );
+    }
+
+    #[test]
+    fn a_busy_is_dialed_but_is_not_a_find() {
+        let mut replay = replay_of(1, &[(10, busy())]);
+        replay.dial_one().unwrap();
+
+        assert_eq!(replay.summary(), (1, 0));
+        assert_eq!(replay.state.busy, 1);
+    }
+
+    #[test]
+    fn the_pace_comes_from_the_files_own_header() {
+        // Half an hour spread over ten calls is three minutes each.
+        let cells: Vec<_> = (0..10).map(|n| (n, busy())).collect();
+        assert_eq!(replay_of(30, &cells).seconds_per_dial, 180);
+    }
+
+    #[test]
+    fn the_ladder_starts_at_ten_a_second_and_bottoms_out_as_recorded() {
+        assert_eq!(SPEEDS[DEFAULT_SPEED], 10.0, "the default pace moved");
+        assert_eq!(SPEEDS[0], AS_RECORDED, "as-recorded must be the floor");
+        assert!(
+            SPEEDS.windows(2).all(|pair| pair[0] < pair[1]),
+            "the ladder has to ascend for +/- to mean anything"
+        );
+    }
+
+    #[test]
+    fn the_slowest_setting_reports_a_pace_rather_than_a_rate() {
+        let cells: Vec<_> = (0..10).map(|n| (n, busy())).collect();
+        let mut replay = replay_of(30, &cells);
+
+        assert!(replay.status_line(false).contains("10 dials/sec"));
+
+        // At the floor the log advances once per recorded call, so the status
+        // line says so in the same units as the Secs field beside it.
+        replay.speed = 0;
+        assert!(
+            replay.status_line(false).contains("180s per call"),
+            "status line said: {:?}",
+            replay.status_line(false)
+        );
+    }
+
+    #[test]
+    fn the_hint_carries_the_mute_state() {
+        let replay = replay_of(1, &[(10, busy())]);
+
+        // There is nowhere else on an 80-column screen to put an indicator,
+        // so the hint has to double as one.
+        assert!(replay.status_line(false).contains("m mute"));
+        assert!(replay.status_line(true).contains("m unmute"));
+    }
+
+    #[test]
+    fn the_status_line_never_overflows_the_screen() {
+        // A long pace and a five-figure percentage are the widest this gets.
+        let cells: Vec<_> = (0..100).map(|n| (n, busy())).collect();
+        let mut replay = replay_of(u16::MAX, &cells);
+
+        for speed in 0..SPEEDS.len() {
+            replay.speed = speed;
+            for paused in [false, true] {
+                replay.paused = paused;
+                for muted in [false, true] {
+                    let line = replay.status_line(muted);
+                    let width = line.chars().count();
+                    assert!(
+                        width <= tl_tui::screen::COLS,
+                        "{width} columns at speed {speed}, \
+                         paused={paused}, muted={muted}: {line:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_scan_clock_starts_at_ten_at_night_and_wraps_past_midnight() {
+        let replay = replay_of(1, &[(10, busy())]);
+        assert_eq!(replay.clock(0), "22:00:00");
+        assert_eq!(replay.clock(2 * 3600), "00:00:00");
+    }
+
+    #[test]
+    fn numbers_are_rendered_through_the_masks_prefix() {
+        // The mask comes from the filename; it is the only surviving record of
+        // what prefix a scan covered.
+        assert_eq!(replay_of(1, &[(25, busy())]).render_number(25), "5550025");
+    }
+}
