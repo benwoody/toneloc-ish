@@ -1,0 +1,37 @@
+name: Mirror to Codeberg
+
+# Runs after CI rather than alongside it, so a red build is never mirrored.
+# `delete` is not a workflow_run event, so branch and tag deletions are caught
+# directly; the push itself is --prune, which is what propagates them.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  delete:
+
+concurrency: mirror
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    # A deletion has no build to wait on. Anything else has to have passed.
+    if: >-
+      github.event_name == 'delete' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Clone source
+        run: git clone --bare https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git src
+
+      - name: Push to Codeberg
+        env:
+          SSH_KEY: ${{ secrets.CODEBERG_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan codeberg.org >> ~/.ssh/known_hosts
+          cd src
+          git push --force --prune \
+            git@codeberg.org:BenDoubleU/${{ github.event.repository.name }}.git \
+            'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
