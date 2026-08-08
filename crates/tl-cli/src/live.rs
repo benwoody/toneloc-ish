@@ -21,6 +21,14 @@ use tl_tui::{ScanType, ScreenState};
 /// Called when a scan turns up a tone or a carrier, so it can be heard.
 pub type FoundSound = Box<dyn FnMut(&str, Cell)>;
 
+/// The speaker's mute switch, shared with whatever is doing the playing.
+///
+/// This loop knows a key was pressed and nothing whatever about sound cards,
+/// so it flips a flag and lets the audio side act on it. Muting silences the
+/// speaker only: a `--record` capture is a rendering rather than a recording
+/// of the speaker, so it stays complete either way.
+pub type MuteSwitch = std::sync::Arc<std::sync::atomic::AtomicBool>;
+
 /// Fewest terminal rows the screen can live in.
 ///
 /// Twenty-four: the full screen is 25 rows, but its last row is blank, so at
@@ -233,6 +241,7 @@ pub fn run(
     path: &str,
     order: DialOrder,
     mut sound: Option<FoundSound>,
+    mute: Option<MuteSwitch>,
 ) -> Result<(Outcome, Replay)> {
     let mut replay = Replay::new(dat, path, order);
     let mut stdout = std::io::stdout();
@@ -260,7 +269,7 @@ pub fn run(
     terminal::enable_raw_mode()?;
     execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide)?;
 
-    let result = run_loop(&mut replay, &mut stdout, &mut sound);
+    let result = run_loop(&mut replay, &mut stdout, &mut sound, mute.as_ref());
 
     // Always restore the terminal, even if the loop failed. Leaving someone in
     // raw mode with a hidden cursor is a rude way to crash.
@@ -274,8 +283,8 @@ fn run_loop(
     replay: &mut Replay,
     stdout: &mut std::io::Stdout,
     sound: &mut Option<FoundSound>,
+    mute: Option<&MuteSwitch>,
 ) -> Result<Outcome> {
-    let mut muted = false;
     let mut next_dial = Instant::now();
     let mut last_draw = Instant::now() - Duration::from_secs(1);
 
@@ -297,7 +306,12 @@ fn run_loop(
                     KeyCode::Char('-') | KeyCode::Char('_') => {
                         replay.speed = replay.speed.saturating_sub(1)
                     }
-                    KeyCode::Char('m') => muted = !muted,
+                    KeyCode::Char('m') => {
+                        if let Some(sw) = mute {
+                            use std::sync::atomic::Ordering;
+                            sw.store(!sw.load(Ordering::Relaxed), Ordering::Relaxed);
+                        }
+                    }
                     _ => {}
                 },
                 Event::Resize(..) => {
@@ -318,7 +332,10 @@ fn run_loop(
                 match replay.dial_one() {
                     Some((number, cell)) => {
                         dialed_this_tick = true;
-                        if !muted && cell.is_hit() {
+                        // Always hand a find to the sound side, muted or not.
+                        // It decides whether the speaker hears it, and a
+                        // `--record` capture stays whole either way.
+                        if cell.is_hit() {
                             if let Some(play) = sound.as_mut() {
                                 play(&replay.render_number(number), cell);
                             }

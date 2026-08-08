@@ -372,9 +372,10 @@ fn replay(
         tl_core::DialOrder::Random { seed }
     };
 
-    let (handler, recording) = make_sound_handler(sound || record.is_some(), record.is_some());
+    let (handler, recording, mute) =
+        make_sound_handler(sound || record.is_some(), record.is_some());
     let started = std::time::Instant::now();
-    let (outcome, replay) = live::run(dat, &path.to_string_lossy(), order, handler)?;
+    let (outcome, replay) = live::run(dat, &path.to_string_lossy(), order, handler, mute)?;
 
     // Show what the run produced: the map, filled in by the replay itself.
     let title = path
@@ -408,14 +409,21 @@ fn replay(
 fn make_sound_handler(
     enabled: bool,
     record: bool,
-) -> (Option<live::FoundSound>, Option<SharedRecorder>) {
+) -> (
+    Option<live::FoundSound>,
+    Option<SharedRecorder>,
+    Option<live::MuteSwitch>,
+) {
     use std::sync::{Arc, Mutex};
 
     if !enabled {
-        return (None, None);
+        return (None, None, None);
     }
 
     let player = tl_audio::Player::new();
+    // Handed to the replay loop so `m` can cut off a handshake already in
+    // progress, rather than only declining to start the next one.
+    let mute = player.as_ref().map(|p| p.mute_switch());
     let recording: Option<SharedRecorder> =
         record.then(|| Arc::new(Mutex::new(tl_audio::Recorder::new())));
     let sink = recording.clone();
@@ -437,7 +445,7 @@ fn make_sound_handler(
         }
     });
 
-    (Some(handler), recording)
+    (Some(handler), recording, mute)
 }
 
 #[cfg(feature = "audio")]
@@ -469,8 +477,15 @@ fn write_recording(path: &Path, recording: SharedRecorder, seconds: f32) -> Resu
 type SharedRecorder = ();
 
 #[cfg(not(feature = "audio"))]
-fn make_sound_handler(_: bool, _: bool) -> (Option<live::FoundSound>, Option<SharedRecorder>) {
-    (None, None)
+fn make_sound_handler(
+    _: bool,
+    _: bool,
+) -> (
+    Option<live::FoundSound>,
+    Option<SharedRecorder>,
+    Option<live::MuteSwitch>,
+) {
+    (None, None, None)
 }
 
 #[cfg(not(feature = "audio"))]
@@ -808,7 +823,12 @@ fn listen(outcome: Outcome, number: &str, standard: Modulation, wav: Option<&Pat
     match tl_audio::Player::new() {
         Some(player) => {
             player.play(samples);
-            // Dropping the player drains the queue before returning.
+            // Wait the length of the sound. Dropping the player stops the
+            // speaker immediately, which is what a scan wants from `q` but the
+            // opposite of what this wants: here the sound is the whole point,
+            // and a carrier runs past twelve seconds before the handshake is
+            // even finished. We know exactly how long it is, so wait that long.
+            std::thread::sleep(std::time::Duration::from_secs_f32(seconds + 0.2));
             drop(player);
         }
         None => {
