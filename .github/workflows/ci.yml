@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # rodio needs ALSA headers on Linux. macOS and Windows use the system
+      # audio APIs and need nothing.
+      - name: Install audio dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      # The archival .DAT files are the oracle for the golden tests. They stay
+      # out of our history deliberately, so CI fetches them.
+      - name: Clone the reference oracle
+        run: git clone --depth 1 https://github.com/steeve/ToneLoc reference
+
+      - name: Test
+        run: cargo test --workspace --all-features
+
+      # Prove the synthesis half stands alone: no sound card, no audio crate.
+      - name: Test without audio
+        run: cargo test -p tl-audio --no-default-features
+
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features

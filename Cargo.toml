@@ -1,0 +1,35 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/tl-core",
+    "crates/tl-modem",
+    "crates/tl-audio",
+    "crates/tl-tui",
+    "crates/tl-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/benwoody/toneloc-ish"
+homepage = "https://github.com/benwoody/toneloc-ish"
+authors = ["BenDoubleU <mail@benwoodall.com>"]
+keywords = ["wardialer", "toneloc", "retrocomputing", "simulator", "phreaking"]
+categories = ["simulation", "command-line-utilities"]
+
+[workspace.dependencies]
+tl-core = { path = "crates/tl-core", version = "0.1.0" }
+tl-modem = { path = "crates/tl-modem", version = "0.1.0" }
+tl-audio = { path = "crates/tl-audio", version = "0.1.0" }
+tl-tui = { path = "crates/tl-tui", version = "0.1.0" }
+
+anyhow = "1.0"
+thiserror = "2.0"
+clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.29"
+
+[profile.release]
+lto = "thin"
+strip = true
