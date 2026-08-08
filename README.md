@@ -5,6 +5,8 @@
 **A historical simulator of the ToneLoc wardialer, relive the 1980s/90s
 wardialing era, no phone line required.**
 
+[![CI](https://github.com/benwoody/toneloc-ish/actions/workflows/ci.yml/badge.svg)](https://github.com/benwoody/toneloc-ish/actions/workflows/ci.yml)
+
 The original **ToneLoc** - "Tone Locator", and yes, named after the rapper - was
 written for MS-DOS in 1994 by **Minor Threat & Mucho Maas**. It dialed every
 number in a telephone prefix overnight and drew you a map of what answered.
