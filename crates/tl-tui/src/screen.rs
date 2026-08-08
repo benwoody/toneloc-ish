@@ -273,9 +273,16 @@ fn build(state: &ScreenState) -> Buffer {
     buf.text(13, 68, "ETA:", STATS_ITEMS);
     buf.text(13, 73, &state.eta, STATS_TEXT);
 
-    // Divider with the Found heading (TONELOC.C:1292-1295).
+    // Divider with the Found heading (TONELOC.C:1292-1295). The original puts
+    // the heading four columns right of the vertical rule, not two:
+    //
+    //     wvline(4,15,7,0,cfg.stats_win);
+    //     wprints(4,19,cfg.stats_win,"┤ Found ├");
+    //
+    // and the rule is seven rows tall, spanning both horizontal dividers
+    // rather than floating between them.
     buf.hline(14, 46, 79, STATS_WIN);
-    buf.text(14, 65, "┤ Found ├", STATS_WIN);
+    buf.text(14, 67, "┤ Found ├", STATS_WIN);
 
     // Counters, left of the vertical rule at col 63 (w_stats / w_found).
     let counters = [
@@ -293,6 +300,9 @@ fn build(state: &ScreenState) -> Buffer {
     for r in 15..=19 {
         buf.put(r, 63, '║', STATS_WIN);
     }
+    // Join the rule to the dividers above and below it. Drawn after both
+    // hlines so the junctions survive.
+    buf.put(14, 63, '╥', STATS_WIN);
 
     // Found numbers, colour-coded the way the original did (TLCFG.C:1259-1260).
     let found_color = match state.scan_type {
@@ -305,6 +315,7 @@ fn build(state: &ScreenState) -> Buffer {
     }
 
     buf.hline(20, 46, 79, STATS_WIN);
+    buf.put(20, 63, '╨', STATS_WIN);
 
     // --- Meter: row 21, col 48, 30 cells (TONELOC.C:1320) ------------------
     let filled = meter_cells(state.tried, state.max_dials);
@@ -457,6 +468,24 @@ mod tests {
         ] {
             assert!(stats.contains(label), "stats panel is missing {label:?}");
         }
+    }
+
+    #[test]
+    fn the_found_rule_joins_its_dividers_and_the_heading_sits_right_of_it() {
+        // TONELOC.C:1292-1295 draws wvline(4,15,7,...) and then
+        // wprints(4,19,...,"┤ Found ├"): a rule seven rows tall, touching the
+        // divider above and below, with the heading four columns to its right.
+        let lines = plain(&demo());
+        let at = |row: usize, col: usize| lines[row].chars().nth(col).unwrap();
+
+        assert_eq!(at(14, 63), '╥', "rule should meet the divider above it");
+        for r in 15..=19 {
+            assert_eq!(at(r, 63), '║', "rule missing at row {r}");
+        }
+        assert_eq!(at(20, 63), '╨', "rule should meet the divider below it");
+
+        let heading: String = lines[14].chars().skip(67).take(9).collect();
+        assert_eq!(heading, "┤ Found ├", "heading is not four columns right");
     }
 
     #[test]
