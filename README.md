@@ -46,6 +46,14 @@ generated, period-accurate **synthetic exchange**.
 
 ## Try it
 
+Install the binary:
+
+```sh
+cargo install --git https://github.com/benwoody/toneloc-ish toneloc-ish
+```
+
+Or build from a clone, which is also where the scans come from:
+
 ```sh
 git clone https://github.com/benwoody/toneloc-ish
 cd toneloc-ish
@@ -60,6 +68,10 @@ cargo run --release -- tonemap reference/SAMPLE11.DAT  # the right-hand edge
 cargo run --release -- info reference/562XXXX.DAT      # provenance, from 1994
 cargo run --release -- listen carrier                  # the handshake, out loud
 ```
+
+If you installed the binary rather than cloning, drop the `cargo run --release
+--` and say `toneloc-ish` instead. It still needs a `.DAT` to read, so clone the
+reference set somewhere and point at that.
 
 Ten thousand numbers land on one screen as a 100 × 100 grid, column-major, so a
 PBX owning a contiguous range paints a *vertical band* and modems cluster. A
