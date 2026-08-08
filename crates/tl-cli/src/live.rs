@@ -35,9 +35,19 @@ pub type MuteSwitch = std::sync::Arc<std::sync::atomic::AtomicBool>;
 /// 24 the status line simply takes the place of the credit line.
 const MIN_ROWS: usize = 24;
 
-/// Dials per second the replay can run at.
-const SPEEDS: [f32; 8] = [1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 400.0];
-const DEFAULT_SPEED: usize = 3;
+/// Dials per second. `0.0` is the slowest setting and means "at the pace this
+/// scan actually ran", taken from the file's own header rather than a constant.
+///
+/// It matters because the ladder used to bottom out at one call a second while
+/// the activity log stamped each line 18 seconds after the last, which is what
+/// the `Minutes` field in SAMPLE10 works out to. Watching timestamps jump
+/// eighteen seconds a line, once a second, is what makes a replay look fake:
+/// the numbers on screen are real, so let the clock be real too.
+const SPEEDS: [f32; 9] = [0.0, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 400.0];
+const DEFAULT_SPEED: usize = 4;
+
+/// The sentinel above, named.
+const AS_RECORDED: f32 = 0.0;
 
 /// How a run ended.
 pub enum Outcome {
@@ -217,17 +227,25 @@ impl Replay {
         Some((number, cell))
     }
 
-    fn status_line(&self) -> String {
+    fn status_line(&self, muted: bool) -> String {
         let pct = if !self.sequence.is_empty() {
             self.position * 100 / self.sequence.len()
         } else {
             100
         };
+        let rate = if SPEEDS[self.speed] == AS_RECORDED {
+            // Say it in the same units the Secs field uses, so the pace and
+            // the timestamps on screen visibly agree.
+            format!("{}s per call", self.seconds_per_dial)
+        } else {
+            format!("{:.0} dials/sec", SPEEDS[self.speed])
+        };
         format!(
-            " {}  {:.0} dials/sec  {}%  —  space pause · +/- speed · m mute · q quit ",
+            " {}  {rate}  {pct}%  —  space pause · +/- speed · {} · q quit ",
             if self.paused { "PAUSED " } else { "RUNNING" },
-            SPEEDS[self.speed],
-            pct,
+            // The hint doubles as the indicator: there is nowhere else on an
+            // 80-column screen to say whether the speaker is off.
+            if muted { "m unmute" } else { "m mute" },
         )
     }
 }
@@ -285,11 +303,19 @@ fn run_loop(
     sound: &mut Option<FoundSound>,
     mute: Option<&MuteSwitch>,
 ) -> Result<Outcome> {
+    use std::sync::atomic::Ordering;
+    let muted = || mute.is_some_and(|sw| sw.load(Ordering::Relaxed));
+
     let mut next_dial = Instant::now();
     let mut last_draw = Instant::now() - Duration::from_secs(1);
 
     loop {
         // --- input ---------------------------------------------------------
+        // A key that changes the status line has to redraw on its own. The
+        // frame below is only drawn when a number is dialed, which at the
+        // slowest setting is once every eighteen seconds — long enough that
+        // pausing or muting would look like it had done nothing at all.
+        let mut acted = false;
         while event::poll(Duration::from_millis(0))? {
             // Read each event exactly once. Reading twice per poll blocks on
             // the second call, because there is nothing left to read.
@@ -299,18 +325,23 @@ fn run_loop(
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         return Ok(Outcome::Quit);
                     }
-                    KeyCode::Char(' ') => replay.paused = !replay.paused,
+                    KeyCode::Char(' ') => {
+                        replay.paused = !replay.paused;
+                        acted = true;
+                    }
                     KeyCode::Char('+') | KeyCode::Char('=') => {
-                        replay.speed = (replay.speed + 1).min(SPEEDS.len() - 1)
+                        replay.speed = (replay.speed + 1).min(SPEEDS.len() - 1);
+                        acted = true;
                     }
                     KeyCode::Char('-') | KeyCode::Char('_') => {
-                        replay.speed = replay.speed.saturating_sub(1)
+                        replay.speed = replay.speed.saturating_sub(1);
+                        acted = true;
                     }
                     KeyCode::Char('m') => {
                         if let Some(sw) = mute {
-                            use std::sync::atomic::Ordering;
                             sw.store(!sw.load(Ordering::Relaxed), Ordering::Relaxed);
                         }
+                        acted = true;
                     }
                     _ => {}
                 },
@@ -318,16 +349,25 @@ fn run_loop(
                     // Wipe the old frame; shrinking leaves debris behind.
                     let _ = execute!(stdout, terminal::Clear(terminal::ClearType::All));
                     last_draw = Instant::now() - Duration::from_secs(1);
-                    draw(replay, stdout, false)?;
+                    draw(replay, stdout, false, muted())?;
                 }
                 _ => {}
             }
         }
 
+        if acted {
+            draw(replay, stdout, false, muted())?;
+            last_draw = Instant::now();
+        }
+
         // --- dial ----------------------------------------------------------
         let mut dialed_this_tick = false;
         if !replay.paused {
-            let interval = Duration::from_secs_f32(1.0 / SPEEDS[replay.speed]);
+            let interval = if SPEEDS[replay.speed] == AS_RECORDED {
+                Duration::from_secs(replay.seconds_per_dial as u64)
+            } else {
+                Duration::from_secs_f32(1.0 / SPEEDS[replay.speed])
+            };
             while Instant::now() >= next_dial {
                 match replay.dial_one() {
                     Some((number, cell)) => {
@@ -342,7 +382,7 @@ fn run_loop(
                         }
                     }
                     None => {
-                        draw(replay, stdout, true)?;
+                        draw(replay, stdout, true, muted())?;
                         // Let the finished screen sit until a key is pressed.
                         wait_for_key()?;
                         return Ok(Outcome::Finished);
@@ -361,7 +401,7 @@ fn run_loop(
 
         // --- draw, capped at ~30fps ---------------------------------------
         if dialed_this_tick && last_draw.elapsed() >= Duration::from_millis(33) {
-            draw(replay, stdout, false)?;
+            draw(replay, stdout, false, muted())?;
             last_draw = Instant::now();
         }
 
@@ -369,7 +409,7 @@ fn run_loop(
     }
 }
 
-fn draw(replay: &Replay, stdout: &mut std::io::Stdout, finished: bool) -> Result<()> {
+fn draw(replay: &Replay, stdout: &mut std::io::Stdout, finished: bool, muted: bool) -> Result<()> {
     let (cols, rows) = terminal::size().unwrap_or((80, 24));
     let rows = rows as usize;
 
@@ -393,7 +433,7 @@ fn draw(replay: &Replay, stdout: &mut std::io::Stdout, finished: bool) -> Result
             replay.state.tried, replay.state.found_count
         )
     } else {
-        replay.status_line()
+        replay.status_line(muted)
     };
 
     // The status line goes on the row after the screen, or over the credit

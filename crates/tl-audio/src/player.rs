@@ -15,8 +15,8 @@ use std::time::Duration;
 const MAX_QUEUED: usize = 2;
 
 /// How often the audio thread wakes to notice the mute switch. It is otherwise
-/// blocked on the queue, and a sound already playing has to be cut off from
-/// out here rather than by refusing the next one.
+/// blocked waiting for the next sound, which at the slowest pace is eighteen
+/// seconds away, and `m` has to take effect while you are still holding it.
 const MUTE_POLL: Duration = Duration::from_millis(50);
 
 /// An audio output you can push buffers at.
@@ -69,12 +69,29 @@ impl Player {
                 stream.log_on_drop(false);
                 let sink = rodio::Sink::connect_new(stream.mixer());
 
+                let mut speaker_off = false;
                 loop {
-                    match rx.recv_timeout(MUTE_POLL) {
+                    let received = rx.recv_timeout(MUTE_POLL);
+
+                    // Mute is the speaker switch, not a queue operation. Turn
+                    // the volume down and leave the queue alone: what is
+                    // playing goes quiet at once, and unmuting picks it back up
+                    // wherever it has got to, which is what ATM0/ATM1 did.
+                    //
+                    // Emphatically not Sink::clear() here. That defers to a
+                    // counter which is only decremented from a source's own
+                    // periodic callback, so if the sound ends first the count
+                    // survives and eats the *next* sound appended. Polling it
+                    // the way this loop does made that near certain, and it
+                    // presents as unmuting appearing to do nothing at all.
+                    let want_off = thread_muted.load(Ordering::Relaxed);
+                    if want_off != speaker_off {
+                        sink.set_volume(if want_off { 0.0 } else { 1.0 });
+                        speaker_off = want_off;
+                    }
+
+                    match received {
                         Ok(samples) => {
-                            if thread_muted.load(Ordering::Relaxed) {
-                                continue;
-                            }
                             // Drop sounds when already behind rather than
                             // queueing them. A replay at 400 dials a second
                             // can generate minutes of handshake audio in
@@ -83,24 +100,9 @@ impl Player {
                             if sink.len() >= MAX_QUEUED {
                                 continue;
                             }
-                            sink.append(rodio::buffer::SamplesBuffer::new(
-                                1,
-                                SAMPLE_RATE,
-                                samples,
-                            ));
+                            sink.append(rodio::buffer::SamplesBuffer::new(1, SAMPLE_RATE, samples));
                         }
-                        Err(RecvTimeoutError::Timeout) => {
-                            // Mute has to silence what is already playing, not
-                            // merely refuse the next sound. A carrier runs
-                            // 12.7s, so gating the queue alone leaves `m`
-                            // looking broken for ten seconds.
-                            if thread_muted.load(Ordering::Relaxed) && !sink.empty() {
-                                sink.clear();
-                                // clear() pauses the sink; unpause so that
-                                // unmuting does not need its own signal.
-                                sink.play();
-                            }
-                        }
+                        Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
                 }
@@ -120,8 +122,12 @@ impl Player {
     }
 
     /// Queue samples for playback. Cheap, and never blocks.
+    ///
+    /// Queues while muted too, and lets the speaker be the thing that is off.
+    /// Dropping them here instead would mean unmuting bought you silence until
+    /// the next find, which at the slowest pace is minutes away.
     pub fn play(&self, samples: Samples) {
-        if self.is_muted() || samples.is_empty() {
+        if samples.is_empty() {
             return;
         }
         if let Some(tx) = &self.tx {
@@ -154,5 +160,40 @@ impl Drop for Player {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_switch_and_the_player_agree_and_sounds_queue_while_muted() {
+        // No sound card (CI, a headless box) means nothing to check.
+        let Some(player) = Player::new() else {
+            return;
+        };
+
+        assert!(!player.is_muted());
+        player.set_muted(true);
+        assert!(player.is_muted());
+
+        // Queued even while muted. Dropping them here would mean unmuting
+        // bought silence until the next find rather than the sound in progress.
+        player.play(vec![0.0; 256]);
+
+        player.set_muted(false);
+        assert!(!player.is_muted(), "mute must toggle back off");
+
+        // The replay loop holds one of these rather than the player itself, so
+        // the two have to be the same flag and not a copy of it.
+        let switch = player.mute_switch();
+        switch.store(true, Ordering::Relaxed);
+        assert!(
+            player.is_muted(),
+            "the shared switch and the player have come apart"
+        );
+        switch.store(false, Ordering::Relaxed);
+        assert!(!player.is_muted());
     }
 }
